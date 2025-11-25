@@ -5,6 +5,9 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional
+import pandas as pd
+from openpyxl.utils import get_column_letter
+import re
 
 # Add the src directory to the Python path
 sys.path.append(str(Path(__file__).parent))
@@ -102,7 +105,61 @@ def process_files(config):
         create_directory(config.output_dir)  # Ensure output directory exists
         
         logger.info(f"Запазване на резултатите във файл: {output_path}")
-        result_df.to_excel(output_path, index=False)
+        
+        # Detect Top Row column by normalized name
+        def norm(name: str):
+            return re.sub(r"[^a-z]", "", str(name).lower())
+        top_col = None
+        for col in list(result_df.columns):
+            if norm(col) == 'toprow':
+                top_col = col
+                break
+
+        # If Top Row exists: keep TRUE only on first row per product (by Handle), others blank
+        if top_col is not None and config.handle_column in result_df.columns:
+            # Normalize existing values to decide the first-row value
+            def is_truthy(val):
+                if isinstance(val, str):
+                    v = val.strip().lower()
+                    return v in {'true', '1', 'yes', 'y'}
+                return bool(val)
+
+            # Apply per-handle
+            for handle, grp in result_df.groupby(config.handle_column, sort=False):
+                idxs = list(grp.index)
+                if not idxs:
+                    continue
+                first_idx = idxs[0]
+                first_val = result_df.at[first_idx, top_col]
+                # Set first row
+                result_df.at[first_idx, top_col] = 'TRUE' if is_truthy(first_val) else ''
+                # Blank all subsequent rows for this handle
+                if len(idxs) > 1:
+                    result_df.loc[idxs[1:], top_col] = ''
+
+        # Convert other boolean dtype columns (excluding Top Row) to 'TRUE'/'FALSE'
+        bool_cols = list(result_df.select_dtypes(include=['bool']).columns)
+        if top_col in bool_cols:
+            bool_cols.remove(top_col)
+        for col in bool_cols:
+            result_df[col] = result_df[col].map({True: 'TRUE', False: 'FALSE'})
+        
+        # Write to Excel with openpyxl engine
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            result_df.to_excel(writer, index=False, sheet_name='Products')
+            
+            # Set column widths for better readability
+            worksheet = writer.sheets['Products']
+            for idx, col in enumerate(result_df.columns):
+                # Get the maximum length of the column
+                max_length = max(
+                    result_df[col].astype(str).apply(len).max(),
+                    len(str(col))  # Length of column name
+                )
+                # Compute proper Excel column letter (A, B, ..., Z, AA, AB, ...)
+                col_letter = get_column_letter(idx + 1)
+                # Set column width (add a little extra space)
+                worksheet.column_dimensions[col_letter].width = min(max_length + 2, 50)
         
         logger.info(f"Обработката завърши успешно. Резултатите са запазени в: {output_path}")
         return True

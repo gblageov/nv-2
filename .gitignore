@@ -117,3 +117,12 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Excel temporary/lock files
+~$*
+*.tmp
+*.bak
+
+# Generated outputs
+/data/processed/
+/backup/

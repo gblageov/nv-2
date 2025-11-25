@@ -58,29 +58,37 @@ class ImageProcessor:
         # Create a list to store processed rows
         processed_rows = []
         
+        # Get the original dtypes for boolean columns
+        bool_columns = products_df.select_dtypes(include=['bool']).columns.tolist()
+        
+        # Convert the DataFrame to a list of dictionaries to preserve dtypes
+        products_dict = products_df.to_dict('records')
+        
         # Process each product
-        for _, product_row in products_df.iterrows():
+        for product_row in products_dict:
+            # Always keep the original row first
+            processed_rows.append(dict(product_row))
+            
             # Get the image IDs for this product
             variant_images = str(product_row.get(self.config.variant_images_column, '')).strip()
             
             if not variant_images or variant_images.lower() in ('', 'nan', 'none'):
-                # If no images, keep the original row
-                processed_rows.append(product_row.to_dict())
+                # If no images, just keep the original row (already added)
                 continue
                 
-            # Process each image ID
+            # Process each image ID to create additional rows
             image_ids = [img_id.strip() for img_id in variant_images.split(',') if img_id.strip().isdigit()]
             
             for img_id in image_ids:
-                # Create a copy of the product data
-                new_row = product_row.copy()
+                # Create a copy of the product data for the new row
+                new_row = dict(product_row)
                 
-                # Update the image data
+                # Update the image data for the new row
                 media_data = self.media_cache.get(img_id, {})
                 new_row[self.config.variant_images_column] = img_id
                 new_row[self.config.image_src_column] = media_data.get('url', '')
                 
-                # Build the alt text
+                # Build the alt text for the new row
                 color = str(product_row.get(self.config.option1_value_column, '')).strip()
                 alt_text = media_data.get('alt', '').strip()
                 
@@ -91,7 +99,8 @@ class ImageProcessor:
                 elif color:
                     new_row[self.config.image_alt_text_column] = color
                 
-                processed_rows.append(new_row.to_dict())
+                # Add the new row with image data
+                processed_rows.append(new_row)
         
         # Create a new DataFrame with the processed rows
         result_df = pd.DataFrame(processed_rows)

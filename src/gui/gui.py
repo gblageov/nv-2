@@ -120,11 +120,20 @@ class NikiVibesGUI:
                 self.text_widget = text_widget
             
             def emit(self, record):
-                msg = self.format(record)
-                self.text_widget.configure(state='normal')
-                self.text_widget.insert(tk.END, msg + '\n', record.levelname)
-                self.text_widget.see(tk.END)
-                self.text_widget.configure(state='disabled')
+                try:
+                    # Skip if widget is gone or app is closing
+                    if self.text_widget is None:
+                        return
+                    if not self.text_widget.winfo_exists():
+                        return
+                    msg = self.format(record)
+                    self.text_widget.configure(state='normal')
+                    self.text_widget.insert(tk.END, msg + '\n', record.levelname)
+                    self.text_widget.see(tk.END)
+                    self.text_widget.configure(state='disabled')
+                except tk.TclError:
+                    # Widget is destroyed; ignore further logs to GUI
+                    pass
         
         # Add the handler to the root logger
         handler = GuiLogHandler(self.log_text)
