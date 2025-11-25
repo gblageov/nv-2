@@ -5,6 +5,7 @@ import logging
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from pathlib import Path
+import re
 from ..config.config import Config
 
 
@@ -32,12 +33,24 @@ class ImageProcessor:
         self.media_cache = {}
         if not media_export_df.empty:
             for _, row in media_export_df.iterrows():
-                media_id = str(row.get(self.config.media_id_column, '')).strip()
-                if media_id and media_id.isdigit():
-                    self.media_cache[media_id] = {
-                        'url': str(row.get(self.config.media_url_column, '')),
-                        'alt': str(row.get(self.config.media_alt_column, ''))
-                    }
+                raw_id = row.get(self.config.media_id_column, '')
+                # Normalize ID: extract digits only, handle floats like 12345.0
+                id_str = '' if raw_id is None else str(raw_id).strip()
+                digits = re.sub(r"\D", "", id_str)
+                if not digits:
+                    continue
+                # Clean URL/ALT, guard against NaN/None
+                raw_url = row.get(self.config.media_url_column, '')
+                raw_alt = row.get(self.config.media_alt_column, '')
+                url = '' if pd.isna(raw_url) else str(raw_url)
+                alt = '' if pd.isna(raw_alt) else str(raw_alt)
+                alt = alt.strip()
+                if alt.lower() in {'nan', 'none'}:
+                    alt = ''
+                self.media_cache[digits] = {
+                    'url': url,
+                    'alt': alt,
+                }
     
     def process(self, products_df: pd.DataFrame, media_export_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -61,11 +74,8 @@ class ImageProcessor:
         # Get the original dtypes for boolean columns
         bool_columns = products_df.select_dtypes(include=['bool']).columns.tolist()
         
-        # Convert the DataFrame to a list of dictionaries to preserve dtypes
-        products_dict = products_df.to_dict('records')
-        
         # Process each product
-        for product_row in products_dict:
+        for _, product_row in products_df.iterrows():
             # Always keep the original row first
             processed_rows.append(dict(product_row))
             
@@ -76,8 +86,13 @@ class ImageProcessor:
                 # If no images, just keep the original row (already added)
                 continue
                 
-            # Process each image ID to create additional rows
-            image_ids = [img_id.strip() for img_id in variant_images.split(',') if img_id.strip().isdigit()]
+            # Process each image ID to create additional rows (normalize IDs to digits only)
+            tokens = [t.strip() for t in variant_images.split(',') if t.strip()]
+            image_ids = []
+            for t in tokens:
+                digits = re.sub(r"\D", "", t)
+                if digits:
+                    image_ids.append(digits)
             
             for img_id in image_ids:
                 # Create a copy of the product data for the new row
@@ -88,22 +103,49 @@ class ImageProcessor:
                 new_row[self.config.variant_images_column] = img_id
                 new_row[self.config.image_src_column] = media_data.get('url', '')
                 
-                # Build the alt text for the new row
+                # Build the alt text for the new row using the required formula
                 color = str(product_row.get(self.config.option1_value_column, '')).strip()
-                alt_text = media_data.get('alt', '').strip()
+                alt_text = str(media_data.get('alt', '')).strip()
+                if alt_text.lower() in {'nan', 'none'}:
+                    alt_text = ''
                 
                 if color and alt_text:
-                    new_row[self.config.image_alt_text_column] = f"{color} | {alt_text}"
+                    new_row[self.config.image_alt_text_column] = f"color:{color} | {alt_text}"
                 elif alt_text:
                     new_row[self.config.image_alt_text_column] = alt_text
                 elif color:
-                    new_row[self.config.image_alt_text_column] = color
+                    new_row[self.config.image_alt_text_column] = f"color:{color}"
                 
                 # Add the new row with image data
                 processed_rows.append(new_row)
         
         # Create a new DataFrame with the processed rows
         result_df = pd.DataFrame(processed_rows)
+
+        # Validation & auto-fix: ensure Image Src is set when we have a valid image id in cache
+        fixed_count = 0
+        missing_count = 0
+        if not result_df.empty and self.config.variant_images_column in result_df.columns:
+            def fill_url(row):
+                nonlocal fixed_count, missing_count
+                vid_raw = str(row.get(self.config.variant_images_column, '')).strip()
+                if not vid_raw:
+                    return row
+                vid = re.sub(r"\D", "", vid_raw)
+                if not vid:
+                    return row
+                current_url = str(row.get(self.config.image_src_column, '')).strip()
+                media = self.media_cache.get(vid)
+                if media and (not current_url):
+                    row[self.config.image_src_column] = media.get('url', '')
+                    if row[self.config.image_src_column]:
+                        fixed_count += 1
+                elif not media:
+                    missing_count += 1
+                return row
+
+            result_df = result_df.apply(fill_url, axis=1)
+            self.logger.info(f"URL валидация: попълнени липсващи URL: {fixed_count}, липсващи в медийния файл ID: {missing_count}")
         
         # Clean up any temporary columns
         if '_original_index' in result_df.columns:

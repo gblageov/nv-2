@@ -124,8 +124,15 @@ def process_files(config):
                     return v in {'true', '1', 'yes', 'y'}
                 return bool(val)
 
-            # Apply per-handle
-            for handle, grp in result_df.groupby(config.handle_column, sort=False):
+            # Consider only rows with a non-empty handle as product rows
+            handle_series = result_df[config.handle_column].astype(str).fillna('')
+            product_mask = handle_series.str.strip() != ''
+
+            # First, blank Top Row on all non-product rows (blank handle, message rows, etc.)
+            result_df.loc[~product_mask, top_col] = ''
+
+            # Apply per-handle only on product rows
+            for handle, grp in result_df.loc[product_mask].groupby(config.handle_column, sort=False):
                 idxs = list(grp.index)
                 if not idxs:
                     continue
